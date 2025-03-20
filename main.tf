@@ -1,10 +1,9 @@
 provider "aws" {
   region = var.region
-  profile = "default"
-    #access_key = var.aws_access_key
-    #secret_key = var.aws_secret_key
+  profile = var.profile
 }
 
+## Data current aws account id
 data "aws_caller_identity" "current" {}
 
 
@@ -15,68 +14,20 @@ resource "aws_iam_user" "bob" {
   path        = "/"
 }
 
-## IAM User Policy
-resource "aws_iam_policy" "bob_policy" {
-  name        = "bob-access-policy"
-  description = "Policy for Bob to access EC2 and S3"
-  policy      = <<POLICY
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Effect": "Allow",
-      "Action": [
-        "ec2:*",
-        "s3:*"
-      ],
-      "Resource": "*"
-    }
-  ]
-}
-POLICY
-}
-
-# IAM Policy Attachment
-resource "aws_iam_user_policy_attachment" "attach_bob_policy" {
-  user       = aws_iam_user.bob.name
-  policy_arn = aws_iam_policy.bob_policy.arn
-}
-
-
-## S3 bucket policy
-resource "aws_s3_bucket_policy" "bucket_policy" {
-  bucket = aws_s3_bucket.my_bucket.id
-  policy = <<POLICY
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Effect": "Allow",
-      "Principal": {
-        "AWS": "arn:aws:iam::${data.aws_caller_identity.current.account_id}:user/${var.iam_user_name}"
-      },
-      "Action": [
-        "s3:GetObject",
-        "s3:PutObject",
-        "s3:ListBucket"
-      ],
-      "Resource": [
-        "arn:aws:s3:::${aws_s3_bucket.my_bucket.id}",
-        "arn:aws:s3:::${aws_s3_bucket.my_bucket.id}/*"
-      ]
-    }
-  ]
-}
-POLICY
+## IAM User Policy Attachment
+resource "aws_iam_policy_attachment" "iam_user_policy" {
+  name       = var.iam_user_name
+  users      = [aws_iam_user.bob.name]
+  policy_arn = var.iam_policy.policy_arn
 }
 
 ## Network
-## VPC, Subnet, and Internet Gateway
+## VPC, Subnet, and Internet Gateway, Security Groups
 resource "aws_vpc" "main_vpc" {
   cidr_block = var.vpc_cidr
 
   tags = {
-    Name = "MainVPC"
+    Name = "${var.vpc_name}"
   }
 }
 
@@ -99,7 +50,7 @@ resource "aws_internet_gateway" "gw" {
   vpc_id = aws_vpc.main_vpc.id
 
   tags = {
-    Name = "InternetGateway"
+    Name = "${var.internet_gateway}"
   }
 }
 
@@ -111,21 +62,21 @@ resource "aws_security_group" "web_sg" {
     from_port   = 80
     to_port     = 80
     protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
+    cidr_blocks = ["${var.vpc_cidr}"]
   }
 
   ingress {
     from_port   = 443
     to_port     = 443
     protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
+    cidr_blocks = ["${var.vpc_cidr}"]
   }
 
   ingress {
     from_port   = 22
     to_port     = 22
     protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
+    cidr_blocks = ["${var.vpc_cidr}"]
   }
 
   egress {
@@ -136,54 +87,7 @@ resource "aws_security_group" "web_sg" {
   }
 
   tags = {
-    Name = "WebSecurityGroup"
-  }
-}
-
-resource "aws_security_group" "frontend_sg" {
-  vpc_id = aws_vpc.main_vpc.id
-
-  # Allow HTTP (80) and HTTPS (443) from anywhere
-  ingress {
-    from_port   = 80
-    to_port     = 80
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  ingress {
-    from_port   = 443
-    to_port     = 443
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  # Allow all outbound traffic
-  egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-}
-
-resource "aws_security_group" "backend_sg" {
-  vpc_id = aws_vpc.main_vpc.id
-
-  # Allow SSH only from YOUR IP (Replace "YOUR_IP/32" with your actual IP)
-  ingress {
-    from_port   = 22
-    to_port     = 22
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"] //YOUR_IP/32
-  }
-
-  # Allow all outbound traffic
-  egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
+    Name = "${var.security_group.name}"
   }
 }
 
@@ -192,7 +96,7 @@ resource "aws_s3_bucket" "my_bucket" {
   bucket = var.s3_bucket_name
 
   tags = {
-    Name = "MyBucket"
+    Name = var.s3_bucket_name
   }
 }
 
@@ -200,26 +104,26 @@ resource "aws_s3_bucket" "my_bucket" {
 ## Backend instances
 resource "aws_instance" "backend" {
   count         = var.backend_instance_count
-  ami           = "ami-04b4f1a9cf54c11d0" # Ubuntu 18.04
+  ami           = var.ami_type.ami_no # Ubuntu 18.04
   instance_type = var.instance_type
   subnet_id     = aws_subnet.backend_subnet.id
-  security_groups = [aws_security_group.backend_sg.id]
+  security_groups = [aws_security_group.web_sg.id]
 
   tags = {
-    Name = "Backend-${count.index}"
+    Name = "${var.backend_instance_type}${count.index}"
   }
 }
 
 ## Frontend instances
 resource "aws_instance" "frontend" {
   count         = var.frontend_instance_count
-  ami           = "ami-04b4f1a9cf54c11d0" # Ubuntu 18.04
+  ami           = var.ami_type.ami_no # Ubuntu 18.04
   instance_type = var.instance_type
   subnet_id     = aws_subnet.frontend_subnet.id
-  security_groups = [aws_security_group.frontend_sg.id]
+  security_groups = [aws_security_group.web_sg.id]
 
   tags = {
-    Name = "Frontend-${count.index}"
+    Name = "${var.frontend_instance_type}${count.index}"
   }
 }
 
